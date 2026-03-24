@@ -13,6 +13,9 @@ $script:Theme = @{
 $script:Tui = @{
     Width  = 80
     Height = 30
+    BannerShown = $false
+    MainMenuAnimated = $false
+    KeepTopMost = $true
 }
 
 function Set-CursorVisible {
@@ -30,6 +33,8 @@ function Set-Theme {
 }
 
 function Set-WindowTopMost {
+    param([bool]$Enable = $true)
+
     try {
         if (-not ('OpenClawNative.WinApi' -as [type])) {
             Add-Type @"
@@ -40,6 +45,8 @@ namespace OpenClawNative {
         [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
         [DllImport("user32.dll", SetLastError=true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll", SetLastError=true)]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
     }
 }
 "@
@@ -48,10 +55,14 @@ namespace OpenClawNative {
         $hWnd = [OpenClawNative.WinApi]::GetConsoleWindow()
         if ($hWnd -ne [IntPtr]::Zero) {
             $HWND_TOPMOST = [IntPtr](-1)
+            $HWND_NOTOPMOST = [IntPtr](-2)
             $SWP_NOSIZE = 0x0001
             $SWP_NOMOVE = 0x0002
-            $SWP_NOACTIVATE = 0x0010
-            [OpenClawNative.WinApi]::SetWindowPos($hWnd, $HWND_TOPMOST, 0, 0, 0, 0, ($SWP_NOSIZE -bor $SWP_NOMOVE -bor $SWP_NOACTIVATE)) | Out-Null
+            $target = if ($Enable) { $HWND_TOPMOST } else { $HWND_NOTOPMOST }
+            [OpenClawNative.WinApi]::SetWindowPos($hWnd, $target, 0, 0, 0, 0, ($SWP_NOSIZE -bor $SWP_NOMOVE)) | Out-Null
+            if ($Enable) {
+                [OpenClawNative.WinApi]::SetForegroundWindow($hWnd) | Out-Null
+            }
         }
     } catch {}
 }
@@ -81,6 +92,233 @@ function Get-Pad([int]$contentWidth) {
     $left = [Math]::Floor(($width - $contentWidth) / 2)
     if ($left -lt 0) { $left = 0 }
     return (' ' * $left)
+}
+
+function Write-Footer {
+    $footer = 'Made by @Diego31-10'
+    Write-Host (Get-Pad $footer.Length) -NoNewline
+    Write-Host $footer -ForegroundColor $script:Theme.Muted
+}
+
+function Invoke-UiEasingDelay {
+    param([int]$Step)
+    $curve = @(120, 80, 50, 70, 40, 55, 35, 25)
+    if ($Step -lt $curve.Count) {
+        Start-Sleep -Milliseconds $curve[$Step]
+    } else {
+        Start-Sleep -Milliseconds 20
+    }
+}
+
+function Show-Banner {
+    $lines = @(
+        ' ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗██╗      █████╗ ██╗    ██╗',
+        '██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔════╝██║     ██╔══██╗██║    ██║',
+        '██║   ██║██████╔╝█████╗  ██╔██╗ ██║██║     ██║     ███████║██║ █╗ ██║',
+        '██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║     ██║     ██╔══██║██║███╗██║',
+        '╚██████╔╝██║     ███████╗██║ ╚████║╚██████╗███████╗██║  ██║╚███╔███╔╝',
+        ' ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝'
+    )
+    
+    if ($script:Tui.BannerShown -eq $false) {
+        # First time - horizontal reveal + zigzag order without moving final positions.
+        try {
+            $startTop = [Console]::CursorTop
+            $lineLen = $lines[0].Length
+            $pad = Get-Pad $lineLen
+            $left = $pad.Length
+
+            foreach ($line in $lines) {
+                Write-Centered (' ' * $lineLen) $script:Theme.Primary
+            }
+
+            $order = @(0, 2, 4, 5, 3, 1)
+            $cuts = @(8, 18, 28, 40, 52, 64, 76)
+
+            foreach ($cut in $cuts) {
+                foreach ($idx in $order) {
+                    $src = $lines[$idx]
+                    $visibleLen = [Math]::Min($cut, $src.Length)
+                    $frame = $src.Substring(0, $visibleLen).PadRight($src.Length)
+                    [Console]::SetCursorPosition($left, $startTop + $idx)
+                    Write-Host $frame -ForegroundColor $script:Theme.Primary -NoNewline
+                    Start-Sleep -Milliseconds 10
+                }
+            }
+
+            [Console]::SetCursorPosition(0, $startTop + $lines.Count)
+        } catch {
+            foreach ($line in $lines) {
+                Write-Centered $line $script:Theme.Primary
+                Start-Sleep -Milliseconds 30
+            }
+        }
+        $script:Tui.BannerShown = $true
+    } else {
+        # Subsequent times - show instantly
+        foreach ($line in $lines) {
+            Write-Centered $line $script:Theme.Primary
+        }
+    }
+}
+
+function Show-BannerFadeIn {
+    $lines = @(
+        ' ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗██╗      █████╗ ██╗    ██╗',
+        '██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔════╝██║     ██╔══██╗██║    ██║',
+        '██║   ██║██████╔╝█████╗  ██╔██╗ ██║██║     ██║     ███████║██║ █╗ ██║',
+        '██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║     ██║     ██╔══██║██║███╗██║',
+        '╚██████╔╝██║     ███████╗██║ ╚████║╚██████╗███████╗██║  ██║╚███╔███╔╝',
+        ' ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝'
+    )
+    
+    foreach ($line in $lines) {
+        Write-Centered $line $script:Theme.Primary
+        Start-Sleep -Milliseconds 80
+    }
+}
+
+function Show-Spinner {
+    param([int]$DurationMs = 3000)
+    $spinners = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+    $start = Get-Date
+    $i = 0
+    
+    while ((Get-Date) - $start -lt [timespan]::FromMilliseconds($DurationMs)) {
+        $spinner = $spinners[$i % $spinners.Count]
+        Write-Host "`r  $spinner Loading gateway..." -NoNewline -ForegroundColor $script:Theme.Primary
+        Start-Sleep -Milliseconds 100
+        $i++
+    }
+    Write-Host "`r                    " -NoNewline
+    # Play beep when loading completes
+    Play-Beep
+}
+
+function Wait-GatewayOnlineWithSpinner {
+    param(
+        [string]$Message = 'Starting gateway...',
+        [int]$TimeoutSeconds = 35
+    )
+
+    $spinners = @('|', '/', '-', '\\')
+    $i = 0
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    while ((Get-Date) -lt $deadline) {
+        if ($script:Tui.KeepTopMost) {
+            Set-WindowTopMost
+        }
+
+        if ((Get-GatewayStatus) -eq 'ONLINE') {
+            Write-Host "`r$(' ' * 50)`r" -NoNewline
+            Play-Beep
+            return $true
+        }
+
+        $spinner = $spinners[$i % $spinners.Count]
+        Write-Host "`r  $spinner $Message" -NoNewline -ForegroundColor $script:Theme.Primary
+        Start-Sleep -Milliseconds 110
+        $i++
+    }
+
+    Write-Host "`r$(' ' * 50)`r" -NoNewline
+    return $false
+}
+
+function Wait-GatewayOfflineWithSpinner {
+    param(
+        [string]$Message = 'Stopping gateway...',
+        [int]$TimeoutSeconds = 45
+    )
+
+    $spinners = @('|', '/', '-', '\\')
+    $i = 0
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    while ((Get-Date) -lt $deadline) {
+        if ($script:Tui.KeepTopMost) {
+            Set-WindowTopMost
+        }
+
+        if ((Get-GatewayStatus) -eq 'OFFLINE') {
+            Write-Host "`r$(' ' * 50)`r" -NoNewline
+            Play-Beep
+            return $true
+        }
+
+        $spinner = $spinners[$i % $spinners.Count]
+        Write-Host "`r  $spinner $Message" -NoNewline -ForegroundColor $script:Theme.Primary
+        Start-Sleep -Milliseconds 110
+        $i++
+    }
+
+    Write-Host "`r$(' ' * 50)`r" -NoNewline
+    return $false
+}
+
+function Start-GatewaySilent {
+    try {
+        if ((Get-GatewayStatus) -eq 'ONLINE') {
+            return $true
+        }
+
+        # Launch command detached in hidden PowerShell so this TUI never shows gateway logs.
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoLogo',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            '& { openclaw gateway start }'
+        ) -ErrorAction Stop | Out-Null
+
+        $ok = Wait-GatewayOnlineWithSpinner -Message 'Starting gateway...' -TimeoutSeconds 75
+        if (-not $ok) {
+            Write-Centered 'Gateway start command sent. Waiting for ONLINE state...' $script:Theme.Muted
+            return $true
+        }
+
+        return $true
+    } catch {
+        Write-Centered "Error starting gateway: $($_.Exception.Message)" Red
+        return $false
+    }
+}
+
+function Stop-GatewaySilent {
+    try {
+        if ((Get-GatewayStatus) -eq 'OFFLINE') {
+            return $true
+        }
+
+        # Match start strategy: detached hidden PowerShell process.
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoLogo',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            '& { openclaw gateway stop }'
+        ) -ErrorAction Stop | Out-Null
+
+        $ok = Wait-GatewayOfflineWithSpinner -Message 'Stopping gateway...' -TimeoutSeconds 45
+        if (-not $ok) {
+            Write-Centered 'Gateway stop command sent. Waiting for OFFLINE state...' $script:Theme.Muted
+            return $true
+        }
+
+        return $true
+    } catch {
+        Write-Centered "Error stopping gateway: $($_.Exception.Message)" Red
+        return $false
+    }
+}
+
+function Play-Beep {
+    try {
+        [Console]::Beep(800, 150)
+        Start-Sleep -Milliseconds 100
+        [Console]::Beep(1000, 150)
+    } catch {}
 }
 
 function Write-Centered {
@@ -130,9 +368,8 @@ function Read-TextInput {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    Write-Host ''
-    $prefix = (Get-Pad 0) + "$Prompt > "
-    [Console]::Write($prefix)
+    $promptLine = "  $Prompt > "
+    [Console]::Write($promptLine)
 
     while ($true) {
         $key = Read-Key
@@ -166,30 +403,27 @@ function Invoke-OpenClaw {
     }
 }
 
-function Start-GatewayBackground {
-    try {
-        $running = Get-Job -Name "OpenClawGatewayStart" -State Running -ErrorAction SilentlyContinue
-        if ($running) {
-            Write-Centered 'Gateway start already running in background.' $script:Theme.Muted
-            return
-        }
-
-        Get-Job -Name "OpenClawGatewayStart" -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
-
-        # Run gateway start in background within this console session.
-        Start-Job -Name "OpenClawGatewayStart" -ScriptBlock {
-            & openclaw gateway start
-        } | Out-Null
-    } catch {
-        Write-Centered "Error starting gateway in background: $($_.Exception.Message)" Red
-    }
-}
-
 function Get-GatewayStatus {
     try {
-        $listening = netstat -ano 2>$null | Select-String ':18789' | Select-String 'LISTENING'
-        if ($null -ne $listening) { return 'ONLINE' }
+        # Preferred on Windows: direct TCP state check (language independent)
+        if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+            $conn = Get-NetTCPConnection -LocalPort 18789 -State Listen -ErrorAction SilentlyContinue
+            if ($conn) { return 'ONLINE' }
+        }
     } catch {}
+
+    try {
+        # Fallback for environments without Get-NetTCPConnection.
+        $lines = netstat -ano 2>$null | Select-String ':18789'
+        if ($lines) {
+            foreach ($line in $lines) {
+                if ($line -match '(LISTENING|ESCUCHANDO)') {
+                    return 'ONLINE'
+                }
+            }
+        }
+    } catch {}
+
     return 'OFFLINE'
 }
 
@@ -329,52 +563,64 @@ function Draw-MainMenu {
     $rightMid = New-Card -Title $items[4].Title -Subtitle $items[4].Subtitle -Selected ($Selected -eq 4)
     $rightBot = New-Card -Title $items[5].Title -Subtitle $items[5].Subtitle -Selected ($Selected -eq 5)
 
+    $animate = -not $script:Tui.MainMenuAnimated
+    $animStep = 0
+
     Clear-Host
     Write-Host ''
-    Write-Centered ' ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗██╗      █████╗ ██╗    ██╗' $script:Theme.Primary
-    Write-Centered '██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔════╝██║     ██╔══██╗██║    ██║' $script:Theme.Primary
-    Write-Centered '██║   ██║██████╔╝█████╗  ██╔██╗ ██║██║     ██║     ███████║██║ █╗ ██║' $script:Theme.Primary
-    Write-Centered '██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║     ██║     ██╔══██║██║███╗██║' $script:Theme.Primary
-    Write-Centered '╚██████╔╝██║     ███████╗██║ ╚████║╚██████╗███████╗██║  ██║╚███╔███╔╝' $script:Theme.Primary
-    Write-Centered ' ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝' $script:Theme.Primary
+    Show-Banner
     Write-Host ''
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
     $tip = Get-MainTip -Selected $Selected
-    Write-Centered ("TIP  $tip") $script:Theme.Muted
+    Write-Centered $tip $script:Theme.Muted
     Write-Host ''
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
-    $statusInner = 70
+    $statusInner = 66
     $statusTop = '┏' + ('━' * $statusInner) + '┓'
-    $nodeField = Fit-Field $node 22
-    $gwField = Fit-Field $gw 8
-    $dateField = Fit-Field $date 10
-    $statusContent = (" NODE {0}   GATEWAY {1}   DATE {2} " -f $nodeField, $gwField, $dateField)
-    $statusContent = Fit-Field $statusContent $statusInner
-    $statusRow = '┃' + $statusContent + '┃'
+    $nodeField = Fit-Field (' NODE ' + $node) 22
+    $gwField = Fit-Field (' GATEWAY ' + $gw) 22
+    $dateField = Fit-Field (' DATE ' + $date) 22
+    $statusContent = ($nodeField + $gwField + $dateField)
     $statusBot = '┗' + ('━' * $statusInner) + '┛'
 
     Write-Centered $statusTop $script:Theme.Dim
-    Write-Centered $statusRow $script:Theme.Text
+    Write-Host (Get-Pad ($statusInner + 2)) -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim -NoNewline
+    Write-Host $statusContent -ForegroundColor $script:Theme.Text -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim
     Write-Centered $statusBot $script:Theme.Dim
     Write-Host ''
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
+    # Keep visual intro effects but preserve strict top/middle/bottom layout order.
     Write-CenteredPair -Left $leftTop.Top -Right $rightTop.Top -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
     Write-CardRowPair -Left $leftTop -Right $rightTop -Field 'Title'
     Write-CardSubRowPair -Left $leftTop -Right $rightTop
     Write-CenteredPair -Left $leftTop.Bottom -Right $rightTop.Bottom -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
     Write-CenteredPair -Left $leftMid.Top -Right $rightMid.Top -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
     Write-CardRowPair -Left $leftMid -Right $rightMid -Field 'Title'
     Write-CardSubRowPair -Left $leftMid -Right $rightMid
     Write-CenteredPair -Left $leftMid.Bottom -Right $rightMid.Bottom -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
     Write-CenteredPair -Left $leftBot.Top -Right $rightBot.Top -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
     Write-CardRowPair -Left $leftBot -Right $rightBot -Field 'Title'
     Write-CardSubRowPair -Left $leftBot -Right $rightBot
     Write-CenteredPair -Left $leftBot.Bottom -Right $rightBot.Bottom -LeftColor $script:Theme.Dim -RightColor $script:Theme.Dim
+    if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
     Write-Host ''
     Write-Centered 'W A S D move  ENTER select' $script:Theme.Primary
+    Write-Host ''
+    Write-Footer
+
+    if ($animate) {
+        $script:Tui.MainMenuAnimated = $true
+    }
 }
 
 function Read-MainMenuSelection {
@@ -404,12 +650,17 @@ function Read-ListSelection {
 
     $selected = 0
     $inner = 54
+    $animated = $false
 
     while ($true) {
         Clear-Host
         Write-Host ''
         Write-Centered $Title $script:Theme.Primary
         Write-Host ''
+
+        $animate = -not $animated
+        $animStep = 0
+        if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
         $top = '┏' + ('━' * $inner) + '┓'
         $bottom = '┗' + ('━' * $inner) + '┛'
@@ -429,10 +680,17 @@ function Read-ListSelection {
             }
             Write-Host '┃' -ForegroundColor $script:Theme.Dim
         }
+        if ($animate) { Invoke-UiEasingDelay $animStep; $animStep++ }
 
         Write-Centered $bottom $script:Theme.Dim
         Write-Host ''
         Write-Centered $Footer $script:Theme.Primary
+        Write-Host ''
+        Write-Footer
+
+        if ($animate) {
+            $animated = $true
+        }
 
         $key = Read-Key
         if ($key.Key -eq [ConsoleKey]::Enter) { return $selected }
@@ -464,27 +722,29 @@ function Show-GatewayMenu {
         switch ($choice) {
             0 {
                 Clear-Host
-                Write-Centered 'Starting gateway in background...' $script:Theme.Primary
-                Start-GatewayBackground
-                Start-Sleep -Seconds 1
+                Write-Centered 'Starting gateway...' $script:Theme.Primary
+                Write-Host ''
+                [void](Start-GatewaySilent)
+                Write-Host ''
                 Write-Centered ("Gateway status: $(Get-GatewayStatus)") $script:Theme.Muted
                 Wait-AnyKey
             }
             1 {
                 Clear-Host
                 Write-Centered 'Stopping gateway...' $script:Theme.Primary
-                Invoke-OpenClaw -Args @('gateway', 'stop')
-                Start-Sleep -Milliseconds 700
+                Write-Host ''
+                [void](Stop-GatewaySilent)
+                Write-Host ''
                 Write-Centered ("Gateway status: $(Get-GatewayStatus)") $script:Theme.Muted
                 Wait-AnyKey
             }
             2 {
                 Clear-Host
                 Write-Centered 'Restarting gateway...' $script:Theme.Primary
-                Invoke-OpenClaw -Args @('gateway', 'stop')
-                Start-Sleep -Seconds 1
-                Invoke-OpenClaw -Args @('gateway', 'start')
-                Start-Sleep -Seconds 2
+                Write-Host ''
+                Invoke-OpenClaw -Args @('gateway', 'restart')
+                Show-Spinner -DurationMs 3000
+                Write-Host ''
                 Write-Centered ("Gateway status: $(Get-GatewayStatus)") $script:Theme.Muted
                 Wait-AnyKey
             }
@@ -527,6 +787,7 @@ function Show-SkillsMenu {
         $choice = Read-ListSelection -Title 'SKILLS MODULES' -Items @(
             'Search skill on ClawHub',
             'Update all skills',
+            'List installed skills',
             'Back to Main Menu'
         )
 
@@ -546,17 +807,23 @@ function Show-SkillsMenu {
             }
             1 {
                 Clear-Host
+                Write-Centered 'Updating all skills...' $script:Theme.Primary
                 Invoke-OpenClaw -Args @('skills', 'update')
                 Wait-AnyKey
             }
-            2 { return }
+            2 {
+                Clear-Host
+                Invoke-OpenClaw -Args @('skills', 'list')
+                Wait-AnyKey
+            }
+            3 { return }
         }
     }
 }
 
 function Show-SupportMenu {
     while ($true) {
-        $choice = Read-ListSelection -Title 'SUPPORT & DOCTOR' -Items @(
+        $choice = Read-ListSelection -Title "SUPPORT & DOCTOR" -Items @(
             'Doctor -- full diagnostic',
             'Onboarding -- setup wizard',
             'Back to Main Menu'
@@ -579,23 +846,53 @@ function Show-SupportMenu {
 }
 
 function Open-Dashboard {
+    $status = Get-GatewayStatus
     Clear-Host
-    Write-Centered 'Opening dashboard: http://127.0.0.1:18789/' $script:Theme.Primary
-    Start-Process 'http://127.0.0.1:18789/' | Out-Null
+    if ($status -ne 'ONLINE') {
+        Write-Centered 'Gateway is OFFLINE' $script:Theme.Primary
+        Write-Centered 'Web Dashboard requires gateway to be online.' $script:Theme.Muted
+    } else {
+        Write-Centered 'Opening dashboard: http://127.0.0.1:18789/' $script:Theme.Primary
+        Start-Process 'http://127.0.0.1:18789/' | Out-Null
+    }
     Wait-AnyKey
 }
 
 function Show-Exit {
     Clear-Host
     Write-Host ''
-    Write-Centered '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓' $script:Theme.Dim
-    Write-Centered '┃ OpenClaw closed successfully.      ┃' $script:Theme.Primary
-    $byeText = ("Goodbye, {0}." -f $env:USERNAME)
-    if ($byeText.Length -gt 34) { $byeText = $byeText.Substring(0, 34) }
-    $byeLine = '┃ ' + $byeText.PadRight(34) + '┃'
-    Write-Centered $byeLine $script:Theme.Muted
-    Write-Centered '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛' $script:Theme.Dim
-    Start-Sleep -Seconds 1
+    $inner = 36
+    $top = '┏' + ('━' * $inner) + '┓'
+    $bot = '┗' + ('━' * $inner) + '┛'
+
+    $line1 = ' OpenClaw closed successfully. '
+    $line2 = (" Goodbye, {0}. " -f $env:USERNAME)
+
+    if ($line1.Length -gt $inner) { $line1 = $line1.Substring(0, $inner) }
+    if ($line2.Length -gt $inner) { $line2 = $line2.Substring(0, $inner) }
+
+    $line1 = $line1.PadRight($inner)
+    $line2 = $line2.PadRight($inner)
+
+    $pad = Get-Pad ($inner + 2)
+
+    Write-Centered $top $script:Theme.Dim
+
+    Write-Host $pad -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim -NoNewline
+    Write-Host $line1 -ForegroundColor $script:Theme.Primary -BackgroundColor $script:Theme.Background -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim
+
+    Write-Host $pad -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim -NoNewline
+    Write-Host $line2 -ForegroundColor $script:Theme.Muted -BackgroundColor $script:Theme.Background -NoNewline
+    Write-Host '┃' -ForegroundColor $script:Theme.Dim
+
+    Write-Centered $bot $script:Theme.Dim
+    Write-Host ''
+    Write-Centered "Made by @Diego31-10" $script:Theme.Muted
+    Start-Sleep -Seconds 1.5
+    exit
 }
 
 Set-Theme
